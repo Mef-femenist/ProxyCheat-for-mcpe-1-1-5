@@ -1,0 +1,139 @@
+//todo multiple downloads, but its not implemented to genisyspro
+ResourcePacksInfoPacket -> mustaccept(false) -> skip if downloadpacks == false
+(skip: client -> ResourcePackClientResponsePacket -> status 3 (0 packs))
+---
+Server:
+ResourcePacksInfoPacket -> mustaccept(false, true)
+Client:
+ResourcePackClientResponsePacket -> (status 2) all packids from ResourcePacksInfoPacket
+
+FOREACH PACKS AS PACK??::
+Server:
+ResourcePackDataInfoPacket -> pack id to download
+::while !downloaded
+Client:
+ResourcePackChunkRequestPacket -> chunkindex 0++! , packid from ResourcePackDataInfoPacket
+Server:
+ResourcePackChunkDataPacket -> chunkindex from ResourcePackChunkRequestPacket, save data
+::
+Server:
+ResourcePackStackPacket -> downloaded pack info??
+Client:
+ResourcePackClientResponsePacket -> status 3, remaining packs
+
+
+if _, ok := preparingPacks[p.PackID]; !ok {
+log.Println(cdate(), "Подготовка пака ", p.PackID)
+preparingPacks[p.PackID] = map[string]interface{}{
+"packid": p.PackID,
+"maxchunksize": p.MaxChunkSize,
+"chunkcount": p.ChunkCount,
+}
+pk := &dataPacket.ResourcePackChunkRequestPacket{
+PackID: p.PackID,
+
+ChunkIndex: 0,
+}
+WritePacket(pk)
+} else {
+log.Println(cdate(), "double preparing for", p.PackID)
+}
+
+//////
+for _, rp := range p.ResourcePackStack {
+if rp.PackID == "" {
+continue
+}
+receivedPackIDs = append(receivedPackIDs, rp.PackID)
+}
+fmt.Printf("ResourcePacksInfoPacket received: %v\n", p.MustAccept)
+//fmt.Println(p.ResourcePackStack[0].PackSize)
+if len(receivedPackIDs) == 0 {
+//WritePacket(&dataPacket.ResourcePackClientResponsePacket{Status: 3, PackIDs: receivedPackIDs})
+//fmt.Println(0)
+} else {
+WritePacket(&dataPacket.ResourcePackClientResponsePacket{Status: 2, PackIDs: receivedPackIDs})
+}
+//////
+if len(receivedPackIDs) == 0 {
+log.Println(cdate(), "Сервер отправил rp пакет, но его айди небыл сохранен ранее")
+continue
+}
+hasFound := false
+for _, pid := range receivedPackIDs {
+if pid == p.PackID {
+hasFound = true
+continue
+}
+}
+if !hasFound {
+log.Println(cdate(), "Сервер отправил несуществующий пак")
+continue
+}
+if p.ChunkIndex == 0 {
+if _, ok := loadingPacks[p.PackID]; !ok {
+log.Println(cdate(), "Загрузка пака ", p.PackID)
+loadingPacks[p.PackID] = map[string]interface{}{
+"packid":     p.PackID,
+"progress":   p.Progress,
+"alldata":    "", //byte
+"chunkindex": 0,
+}
+}
+//log.Println(cdate(), "Загрузка пака", p.PackID,":", p.ChunkIndex, "/",preparingPacks[p.PackID].(map[string]interface{})["chunkcount"])
+
+loadingPacks[p.PackID].(map[string]interface{})["chunkindex"] = p.ChunkIndex + 1
+loadingPacks[p.PackID].(map[string]interface{})["alldata"] = loadingPacks[p.PackID].(map[string]interface{})["alldata"].(string) + p.Data
+pk := &dataPacket.ResourcePackChunkRequestPacket{
+PackID: p.PackID,
+
+ChunkIndex: loadingPacks[p.PackID].(map[string]interface{})["chunkindex"].(int32),
+}
+WritePacket(pk)
+
+} else {
+//loading
+
+if preparingPacks[p.PackID].(map[string]interface{})["chunkcount"].(int32) == 0 {
+log.Println(cdate(), "Загрузка пака", p.PackID,"завершена")
+WritePacket(&dataPacket.ResourcePackClientResponsePacket{Status: 3, PackIDs: []string{}}) //[]string{}??//here remaining pack ids
+if CurrentBotInstance.BotConfig.DownloadPacks {
+ioutil.WriteFile("data/packs/"+p.PackID + ".zip", []byte(loadingPacks[p.PackID].(map[string]interface{})["alldata"].(string)), os.ModePerm)
+//todo multiple packs
+//todo if DownloadPacks = false -> fake cache -> skip download
+}
+continue
+}
+
+log.Println(cdate(), "Загрузка пака", p.PackID,":", p.ChunkIndex, "/",preparingPacks[p.PackID].(map[string]interface{})["chunkcount"])
+loadingPacks[p.PackID].(map[string]interface{})["chunkindex"] = p.ChunkIndex + 1
+loadingPacks[p.PackID].(map[string]interface{})["alldata"] = loadingPacks[p.PackID].(map[string]interface{})["alldata"].(string) + p.Data
+if p.ChunkIndex == (preparingPacks[p.PackID].(map[string]interface{})["chunkcount"].(int32)){
+log.Println(cdate(), "Загрузка пака", p.PackID,"завершена")
+WritePacket(&dataPacket.ResourcePackClientResponsePacket{Status: 3, PackIDs: []string{}}) //[]string{}??//here remaining pack ids
+if CurrentBotInstance.BotConfig.DownloadPacks {
+ioutil.WriteFile("data/packs/"+p.PackID + ".zip", []byte(loadingPacks[p.PackID].(map[string]interface{})["alldata"].(string)), os.ModePerm)
+//todo multiple packs
+//todo if DownloadPacks = false -> fake cache -> skip download
+}
+continue
+}
+pk := &dataPacket.ResourcePackChunkRequestPacket{
+PackID: p.PackID,
+
+ChunkIndex: loadingPacks[p.PackID].(map[string]interface{})["chunkindex"].(int32),
+}
+time.Sleep(7000)
+WritePacket(pk)
+
+}
+//
+//if saver.Isset(p.ID()) {
+fmt.Println(" ResourcePackStackPacket received")
+fmt.Println(p.BehaviorPackStack[0].PackID)
+//ignore
+//break
+//} else {
+saver.Save(p.ID())
+//todo done check
+WritePacket(&dataPacket.ResourcePackClientResponsePacket{Status: 4, PackIDs: receivedPackIDs})
